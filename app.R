@@ -1,14 +1,6 @@
-##############################
-## app.R
-##############################
-
 library(shiny)
-library(DESeq2)
-library(SummarizedExperiment)
 library(ggplot2)
 library(ggpubr)
-library(org.Hs.eg.db)
-library(AnnotationDbi)
 library(dplyr)
 library(tidyr)
 library(purrr)
@@ -16,105 +8,36 @@ library(stringr)
 library(plotly)
 
 ############################################################
-## Helper functions
+## Helper functions (unchanged behaviour)
 ############################################################
 
 mapIDsToSymbols <- function(ids) {
-  eg2symmap <- as.list(org.Hs.egSYMBOL[mappedkeys(org.Hs.egSYMBOL)])
   ids <- as.character(ids)
-  mapped_symbols <- eg2symmap[ids]
-  names(mapped_symbols) <- ids
-  symbols <- sapply(mapped_symbols, function(x) if (is.null(x)) NA else x[1])
-  setNames(unlist(symbols), names(mapped_symbols))
+  syms <- gene_lookup$id_to_symbol[ids]
+  # fallback: if we don't know the symbol, just show the ID
+  syms[is.na(syms)] <- ids[is.na(syms)]
+  unname(syms)
 }
 
 revString <- function(text){
   paste(rev(unlist(strsplit(text,NULL))),collapse="")
 }
 
-plotGene <- function(fDds,geneID) {
-  facets_labels <- c('m'='MCF7','t'='T47D')
-  CoI_labels <- c('HV'='Hypoxia & Vehicle',
-                  'HF'='Hypoxia & Fulvestrant',
-                  'NV'='Normoxia & Vehicle',
-                  'NF'='Normoxia & Fulvestrant')
-  
-  d <- plotCounts(
-    fDds,
-    gene = as.character(geneID),
-    intgroup = c("CoI","cellline","condition","treatment"),
-    returnData = TRUE,
-    transform = FALSE
-  )
-  
-  d$combined <- paste0(d$condition,d$treatment)
-  
-  ggplot(d, aes(x=combined, y=count)) +
-    geom_boxplot(aes(fill=condition), linewidth = 0.5) +
-    facet_grid(cellline ~ ., labeller = as_labeller(facets_labels), scales="free") +
-    ggtitle(mapIDsToSymbols(geneID)) +
-    theme_pubr() +
-    expand_limits(x = 0, y = 0) +
-    scale_x_discrete(labels=CoI_labels) +
-    labs(y= "Normalised Counts", x = "Condition & Treatment") +
-    theme(legend.position = "none")
-}
+# Pretty labels used for plotting / faceting
+CoI_labels <- c(
+  'HV'='Hypoxia & Vehicle',
+  'HF'='Hypoxia & Fulvestrant',
+  'NV'='Normoxia & Vehicle',
+  'NF'='Normoxia & Fulvestrant'
+)
 
-getDeSeqStatCompare<-function(fDds, cellline, group1, group2, geneID, ypos) {
-  stat.res <- results(
-    fDds,
-    contrast = c(
-      "CoI",
-      paste0(revString(group1),cellline),
-      paste0(revString(group2),cellline)
-    )
-  )
-  data.frame(
-    cellline = cellline,
-    group1 = group1,
-    group2 = group2,
-    p.adj = signif(stat.res[as.character(geneID),'padj'],2),
-    y.position = ypos
-  )
-}
+cellline_labels <- c('m'='MCF7','t'='T47D')
 
-getDeSeqStat<-function(fDds,geneID,ypos) {
-  rbind(
-    getDeSeqStatCompare(fDds, 'm',"HF","HV",geneID,ypos),
-    getDeSeqStatCompare(fDds, 'm',"HF","NV",geneID,ypos*1.1),
-    getDeSeqStatCompare(fDds, 'm',"HV","NV",geneID,ypos*1.2),
-    getDeSeqStatCompare(fDds, 't',"HF","HV",geneID,ypos),
-    getDeSeqStatCompare(fDds, 't',"HF","NV",geneID,ypos*1.1),
-    getDeSeqStatCompare(fDds, 't',"HV","NV",geneID,ypos*1.2)
-  )
-}
+########################
+# Volcano helpers
+########################
 
-plotGeneStats<-function(fDds,geneID,ypos=1000) {
-  plotGene(fDds, geneID) +
-    stat_pvalue_manual(
-      getDeSeqStat(fDds,geneID,ypos),
-      size=2.8,
-      unit="pt",
-      label = "p = {p.adj}"
-    )
-}
-
-# Build volcano data frame for a given contrast level in a given cell line
-getVolcanoTable <- function(fDds, coi_A, coi_B, which_cellline){
-  res <- results(fDds, contrast=c("CoI", coi_A, coi_B))
-  df <- as.data.frame(res)
-  df$gene_id <- rownames(df)
-  df$symbol <- mapIDsToSymbols(df$gene_id)
-  df$negLog10Padj <- -log10(df$padj)
-  df$cellline <- which_cellline
-  
-  df$meets_fc   <- abs(df$log2FoldChange) >= 2
-  df$meets_padj <- df$padj < 0.05
-  
-  df
-}
-
-# Interactive volcano with POI on top
+# Interactive volcano with POI on top (in red)
 makeInteractiveVolcano <- function(df, poi_gene_query){
   
   # mark poi / sig / bg
@@ -122,7 +45,7 @@ makeInteractiveVolcano <- function(df, poi_gene_query){
   sig_mask <- (!poi_mask) & df$meets_fc & df$meets_padj
   bg_mask  <- (!poi_mask) & !sig_mask
   
-  # safe hover text
+  # hover text
   safe_padj <- ifelse(is.na(df$padj), "NA", signif(df$padj,3))
   safe_neglog10 <- ifelse(is.na(df$negLog10Padj), "NA", signif(df$negLog10Padj,3))
   hover_txt <- function(idx_vec) {
@@ -177,7 +100,7 @@ makeInteractiveVolcano <- function(df, poi_gene_query){
     )
   }
   
-  # point of interest (red, bigger, last)
+  # point of interest (red, bigger, last so always on top)
   if (any(poi_mask, na.rm=TRUE)) {
     idx <- which(poi_mask)
     p <- add_trace(
@@ -198,7 +121,7 @@ makeInteractiveVolcano <- function(df, poi_gene_query){
     )
   }
   
-  # cutoff lines
+  # cutoff lines: |LFC| >= 2 and padj < 0.05
   p <- add_lines(
     p,
     x = c(-2,-2),
@@ -241,68 +164,158 @@ makeInteractiveVolcano <- function(df, poi_gene_query){
   p
 }
 
-############################################################
-## Data load + DESeq2 setup
-############################################################
+########################
+# Gene expression / stats helpers (adapted to use the smaller RDS)
+########################
 
-mcf7 <- readRDS("Processed Data/countMatrix-MCF7.RDS")
-t47d <- readRDS("Processed Data/countMatrix-t47D.RDS")
-
-mcf7Counts <- mcf7$counts
-t47dCounts <- t47d$counts
-
-mcf7Samplenames <- matrix(nrow=2, unlist(strsplit(colnames(mcf7Counts),"\\.")))[1,]
-
-t47dSamplenames <- sub(
-  "_2","",
-  matrix(nrow=2, unlist(strsplit(colnames(t47dCounts),"\\.")))[1,]
-)
-t47dSamplenames <- paste0(
-  substr(t47dSamplenames,3,3),
-  substr(t47dSamplenames,1,2),
-  substr(t47dSamplenames,4,4)
-)
-
-colnames(mcf7Counts) <- paste0(mcf7Samplenames,"_m")
-colnames(t47dCounts) <- paste0(t47dSamplenames,"_t")
-
-generateMetadata <- function(samplenames,cellline) {
-  data.frame(
-    treatment = substr(samplenames,1,1),
-    condition = substr(samplenames,nchar(samplenames),nchar(samplenames)),
-    rep = gsub("[^0-9.-]", "", samplenames),
-    cellline = cellline,
-    row.names = paste0(samplenames,"_",cellline)
-  )
+# Pull per-sample counts + metadata for one gene from the small counts table
+getGeneCountsDf <- function(geneID) {
+  d <- counts_df %>% dplyr::filter(gene_id == as.character(geneID))
+  d$combined <- paste0(d$condition, d$treatment)
+  d
 }
 
-coldata <- rbind(
-  generateMetadata(mcf7Samplenames,'m'),
-  generateMetadata(t47dSamplenames,'t')
-)
+# Compute DESeq2 padj for a set of within-cell-line comparisons and place them vertically
+# now uses precomputed stats_store (long format)
+getDeSeqStat_oneCell <- function(geneID, cell_tag, ypos_base) {
+  pairs <- list(
+    c("HF","HV"),
+    c("NF","NV"),
+    c("HV","NV")
+  )
+  
+  stat_long <- stats_store[[cell_tag]] %>% dplyr::filter(gene_id == as.character(geneID))
+  
+  out <- Map(function(pair, i){
+    group1 <- pair[1]
+    group2 <- pair[2]
+    
+    p.adj.val <- stat_long %>%
+      dplyr::filter(group1 == !!group1, group2 == !!group2) %>%
+      dplyr::pull(p.adj)
+    if (length(p.adj.val) == 0) p.adj.val <- NA
+    
+    data.frame(
+      group1 = group1,
+      group2 = group2,
+      p.adj = signif(p.adj.val, 2),
+      y.position = ypos_base * (1 + 0.1*(i-1)),
+      cellline = cell_tag,
+      stringsAsFactors = FALSE
+    )
+  }, pairs, seq_along(pairs))
+  
+  do.call(rbind, out)
+}
 
-counts <- cbind(mcf7Counts,t47dCounts)
-coldata <- coldata[colnames(counts),,drop=FALSE]
+# Plot one cell line (either m or t) with optional fixed y cap and with that
+# cell line's stats table (unchanged)
+plotGene_oneCell <- function(d_sub, geneID, cell_tag, ymax_override = NULL, stats_df = NULL) {
+  
+  # 1. figure out how tall the data go
+  data_max <- max(d_sub$count, na.rm = TRUE)
+  
+  # 2. figure out how tall the annotations want to go
+  if (!is.null(stats_df) && nrow(stats_df) > 0) {
+    anno_max <- max(stats_df$y.position, na.rm = TRUE)
+  } else {
+    anno_max <- data_max
+  }
+  
+  # 3. pick a target max (before global override)
+  # a little padding, e.g. +10%
+  local_ceiling <- max(data_max, anno_max) * 1.1
+  
+  # 4. if caller provided an override (shared scale mode), use that instead
+  final_ceiling <- if (!is.null(ymax_override)) ymax_override else local_ceiling
+  
+  p <- ggplot(d_sub, aes(x=combined, y=count)) +
+    geom_boxplot(aes(fill=condition), linewidth = 0.5) +
+    ggtitle(paste0(mapIDsToSymbols(geneID), " (", cellline_labels[[cell_tag]], ")")) +
+    theme_pubr() +
+    scale_x_discrete(labels=CoI_labels) +
+    labs(y= "Normalised Counts", x = "Condition & Treatment") +
+    theme(legend.position = "none") +
+    coord_cartesian(ylim = c(0, final_ceiling))
+  
+  if (!is.null(stats_df) && nrow(stats_df) > 0) {
+    p <- p + stat_pvalue_manual(
+      stats_df,
+      size = 2.8,
+      unit = "pt",
+      label = "p = {p.adj}"
+    )
+  }
+  
+  p +  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+}
 
-coldata$CoI <- paste0(
-  coldata$treatment,
-  coldata$condition,
-  coldata$cellline
-)
+# Make the combined 2-panel plot with synced or free y-scales
+plotGeneCombined <- function(geneID, lock_scale = TRUE) {
+  
+  d_all <- getGeneCountsDf(geneID)
+  
+  d_m <- d_all %>% dplyr::filter(cellline == "m")
+  d_t <- d_all %>% dplyr::filter(cellline == "t")
+  
+  # per-cell-line maxima
+  ymax_m <- max(d_m$count, na.rm=TRUE) * 1.2
+  ymax_t <- max(d_t$count, na.rm=TRUE) * 1.2
+  
+  # choose per-plot y-limits
+  if (isTRUE(lock_scale)) {
+    common_max <- max(ymax_m, ymax_t)
+    stats_m <- getDeSeqStat_oneCell(geneID, "m", ypos_base = common_max)
+    stats_t <- getDeSeqStat_oneCell(geneID, "t", ypos_base = common_max)
+    ylim_m <- common_max*1.2
+    ylim_t <- common_max*1.2
+  } else {
+    stats_m <- getDeSeqStat_oneCell(geneID, "m", ypos_base = ymax_m)
+    stats_t <- getDeSeqStat_oneCell(geneID, "t", ypos_base = ymax_t)
+    ylim_m <- NULL
+    ylim_t <- NULL
+  }
+  
+  
+  p_m <- plotGene_oneCell(
+    d_sub = d_m,
+    geneID = geneID,
+    cell_tag = "m",
+    ymax_override = ylim_m,
+    stats_df = stats_m
+  )
+  
+  p_t <- plotGene_oneCell(
+    d_sub = d_t,
+    geneID = geneID,
+    cell_tag = "t",
+    ymax_override = ylim_t,
+    stats_df = stats_t
+  )
+  
+  ggpubr::ggarrange(p_m, p_t, nrow = 1)
+}
 
-removeSamples <- c(grep("4",colnames(counts), value=TRUE),"V21H_t")
-keep <- !colnames(counts) %in% removeSamples
-filteredCounts <- counts[, keep, drop=FALSE]
-filteredColdata <- coldata[keep, , drop=FALSE]
+############################################################
+## Data load (smaller precomputed object)
+############################################################
 
-fDds <- DESeqDataSetFromMatrix(
-  countData = filteredCounts,
-  colData = filteredColdata,
-  design = ~ CoI
-)
-fDds <- DESeq(fDds)
+# NEW: read the reduced RDS prepared by the helper script (see make_small_rds.R)
+small <- readRDS("Processed Data/fDds_small.RDS")
 
-# biological -> CoI mapping for each cell line
+# components expected in the small object:
+# small$gene_lookup: list with id_to_symbol and symbol_to_id
+# small$volcano: named list of contrasts, each a list with $m and $t data.frames (columns same as before)
+# small$counts: long data.frame with columns gene_id,sample,count,condition,treatment,cellline
+# small$stats: list with $m and $t long data.frames columns: gene_id, group1, group2, p.adj
+# small$gene_ids: character vector of gene IDs present
+gene_lookup <- small$gene_lookup
+volcano_store <- small$volcano
+counts_df <- small$counts
+stats_store <- small$stats
+gene_ids <- small$gene_ids
+
+# biological -> CoI mapping for each cell line (unchanged)
 contrast_map <- list(
   "Control vs Hypoxia" = list(
     m = c("VHm","VNm"),  # MCF7: Vehicle Hypoxia vs Vehicle Normoxia
@@ -319,11 +332,11 @@ contrast_map <- list(
 )
 
 ############################################################
-## UI
+## UI (unchanged)
 ############################################################
 
 ui <- fluidPage(
-  titlePanel("MCF7 vs T47D dual-volcano explorer"),
+  titlePanel("EDHR explorer"),
   sidebarLayout(
     sidebarPanel(
       selectInput(
@@ -337,8 +350,21 @@ ui <- fluidPage(
         "Gene (symbol or Entrez ID):",
         value = "SCNN1B"
       ),
-      actionButton("go_gene", "Update gene"),
-      helpText("Click 'Update gene' to refresh highlight & expression.")
+      fluidRow(
+        column(
+          width = 7,
+          checkboxInput(
+            "lock_scale",
+            "Match y-axis",
+            value = TRUE
+          )
+        ),
+        column(
+          width = 5,
+          actionButton("go_gene", "Plot gene")
+        )
+      ),
+      helpText("Click 'Plot gene' to refresh highlight & expression. Tick 'Match y-axis' to force both panels to same Y range.")
     ),
     mainPanel(
       fluidRow(
@@ -359,35 +385,22 @@ ui <- fluidPage(
 )
 
 ############################################################
-## Server
+## Server (adapted to use precomputed, smaller data)
 ############################################################
 
 server <- function(input, output, session){
   
-  # freeze the requested gene at the moment "Update gene" is clicked
+  # freeze the requested gene at the moment "Plot gene" is clicked
   selected_gene <- eventReactive(input$go_gene, {
     input$gene_search
-  }, ignoreInit = FALSE)  # so it works on first load
+  }, ignoreInit = FALSE)  # will run once on load
   
-  # recompute volcano data when contrast changes
+  # recompute volcano data whenever contrast changes (use precomputed store)
   volcano_data <- reactive({
-    cm <- contrast_map[[ input$contrast_choice ]]
-    
-    vm <- getVolcanoTable(
-      fDds,
-      coi_A = cm$m[1],
-      coi_B = cm$m[2],
-      which_cellline = "MCF7"
-    )
-    
-    vt <- getVolcanoTable(
-      fDds,
-      coi_A = cm$t[1],
-      coi_B = cm$t[2],
-      which_cellline = "T47D"
-    )
-    
-    list(m = vm, t = vt)
+    # take the precomputed tables for this named contrast
+    vs <- volcano_store[[ input$contrast_choice ]]
+    # vs is expected to be a list with $m and $t data.frames
+    list(m = vs$m, t = vs$t)
   })
   
   # volcano plots (highlight based on last confirmed gene)
@@ -405,30 +418,28 @@ server <- function(input, output, session){
     )
   })
   
-  # title updates with last confirmed gene
+  # title above gene stats plot
   output$gene_title <- renderText({
     paste0("Per-gene expression for: ", selected_gene())
   })
   
-  # boxplot + stats also use last confirmed gene
+  # boxplot + stats: now uses combined two-panel plot with proper scaling logic
   output$gene_boxplot <- renderPlot({
     gene_query <- selected_gene()
     
-    # match Entrez ID or symbol
+    # Accept Entrez ID rowname or gene symbol (no DB call)
     target_row <- NULL
-    if (gene_query %in% rownames(fDds)) {
-      target_row <- gene_query
+    gene_query_clean <- gene_query
+    
+    # Case 1: user typed an Entrez ID that matches gene_ids
+    if (gene_query_clean %in% gene_ids) {
+      target_row <- gene_query_clean
     } else {
-      sym2entrez <- AnnotationDbi::select(
-        org.Hs.eg.db,
-        keys = gene_query,
-        keytype = "SYMBOL",
-        columns = c("ENTREZID","SYMBOL")
-      )
-      if (!is.null(sym2entrez$ENTREZID)) {
-        match_id <- sym2entrez$ENTREZID[1]
-        if (match_id %in% rownames(fDds)) {
-          target_row <- match_id
+      # Case 2: user typed a gene symbol that we know
+      if (gene_query_clean %in% names(gene_lookup$symbol_to_id)) {
+        candidate <- gene_lookup$symbol_to_id[[gene_query_clean]]
+        if (candidate %in% gene_ids) {
+          target_row <- candidate
         }
       }
     }
@@ -437,25 +448,19 @@ server <- function(input, output, session){
       validate(
         need(FALSE,
              paste0("Couldn't find gene '",gene_query,
-                    "' in this DESeqDataSet. Try Entrez ID?"))
+                    "' in this dataset. Try Entrez ID or another symbol?"))
       )
     }
     
-    dtmp <- plotCounts(
-      fDds,
-      gene = target_row,
-      intgroup = c("CoI","cellline","condition","treatment"),
-      returnData = TRUE,
-      transform = FALSE
+    plotGeneCombined(
+      geneID = target_row,
+      lock_scale = input$lock_scale
     )
-    yguess <- max(dtmp$count, na.rm=TRUE) * 1.2
-    
-    plotGeneStats(fDds, target_row, ypos = yguess)
   })
 }
 
 ############################################################
-## Launch
+## Launch (unchanged)
 ############################################################
 
 shinyApp(ui, server)
